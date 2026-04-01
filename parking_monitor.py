@@ -1,58 +1,61 @@
 # Font: Noto Sans
-import os
-import asyncio
-from playwright.async_api import async_playwright
 import requests
+import os
 from datetime import datetime
 
+# 깃허브 시크릿 설정
 BOT_TOKEN = os.environ.get('PARKING_BOT_TOKEN')
 MY_CHAT_ID = os.environ.get('PARKING_CHAT_ID')
 
 def send_alert(message):
     url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage"
-    payload = {"chat_id": MY_CHAT_ID, "text": message, "parse_mode": "Markdown"}
-    requests.post(url, json=payload)
+    payload = {
+        "chat_id": MY_CHAT_ID,
+        "text": message,
+        "parse_mode": "Markdown"
+    }
+    try:
+        requests.post(url, json=payload)
+    except Exception as e:
+        print(f"텔레그램 전송 에러: {e}")
 
-async def monitor():
+def check_parking():
     now = datetime.now().strftime('%Y-%m-%d %H:%M')
-    async with async_playwright() as p:
-        browser = await p.chromium.launch(headless=True)
-        context = await browser.new_context(viewport={'width': 1280, 'height': 800})
-        page = await context.new_page()
+    
+    # 성백님이 찾으신 직통 API 주소
+    api_url = "https://api.amanopark.co.kr/api/web/setting/booking/check"
+    params = {
+        "date": "2026-05-21",
+        "type": "BASIC"
+    }
+    
+    headers = {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+        "Origin": "https://valet.amanopark.co.kr",
+        "Referer": "https://valet.amanopark.co.kr/"
+    }
+
+    try:
+        response = requests.get(api_url, params=params, headers=headers)
+        data = response.json() # 결과 예: {"data": false}
         
-        try:
-            await page.goto("https://valet.amanopark.co.kr/booking")
-            await page.wait_for_load_state("networkidle")
-            
-            # 1. 달력 열기
-            await page.click('input[placeholder="년도-월-일"]')
-            await asyncio.sleep(1)
+        # 서버 응답에서 'data' 값이 true인지 확인
+        is_available = data.get('data', False)
 
-            # 2. 5월이 보일 때까지 '다음 달' 버튼 클릭
-            # 최대 3번까지만 시도 (무한 루프 방지)
-            for _ in range(3):
-                calendar_header = await page.locator(".flatpickr-month").inner_text()
-                if "May" in calendar_header or "5월" in calendar_header:
-                    break
-                # 다음 달 버튼 (>) 클릭 - 스크린샷의 '>' 버튼 위치 고려
-                await page.locator(".flatpickr-next-month").click()
-                await asyncio.sleep(0.5)
+        if is_available:
+            msg = f"🚨 **[주차대행 자리 발생!]**\n성백님, 5월 21일 예약이 가능합니다!\n지금 즉시 예약하세요: https://valet.amanopark.co.kr/booking"
+            send_alert(msg)
+            print(f"{now} - 자리가 났습니다! 알림 전송 완료.")
+        else:
+            # 자리가 없을 때도 보고 (성백님 요청사항)
+            msg = f"ℹ️ [파킹봇 상태 보고]\n조회 시간: {now}\n5월 21일은 아직 **만차**입니다. 계속 감시할게요!"
+            send_alert(msg)
+            print(f"{now} - 아직 만차입니다.")
 
-            # 3. 5월 21일 클릭
-            await page.get_by_role("cell", name="21", exact=True).click()
-            await asyncio.sleep(2)
-
-            # 4. 결과 판별
-            content = await page.content()
-            if "만차" in content:
-                send_alert(f"ℹ️ [파킹봇 상태 보고]\n조회 시간: {now}\n5월 21일은 아직 자리가 없습니다. 계속 감시 중!")
-            else:
-                send_alert(f"🚨 [긴급: 자리 발생]\n성백님! 5월 21일 자리가 난 것 같습니다!\n지금 바로 예약: https://valet.amanopark.co.kr/booking")
-
-        except Exception as e:
-            send_alert(f"❌ [에러 알림]\n체크 중 오류가 발생했습니다: {str(e)}")
-        finally:
-            await browser.close()
+    except Exception as e:
+        error_msg = f"❌ [파킹봇 오류]\n데이터를 가져오지 못했습니다: {str(e)}"
+        send_alert(error_msg)
+        print(error_msg)
 
 if __name__ == "__main__":
-    asyncio.run(monitor())
+    check_parking()
